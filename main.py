@@ -12,21 +12,22 @@ from supabase_client import get_client, upsert_products
 
 
 def _info_text_for_embedding(product: dict) -> str:
-    """Build a single text from product fields for info_embedding."""
+    """Build a single text from product fields for info_embedding. Truncate to ~2000 chars for model limits."""
     parts = [
         product.get("title") or "",
         product.get("description") or "",
         product.get("category") or "",
         product.get("gender") or "",
         product.get("price") or "",
-        product.get("sale") or "",
+        (product.get("sale") or "") if product.get("sale") else "",  # sale only if present
     ]
     meta = product.get("metadata")
     if isinstance(meta, dict):
         parts.append(json.dumps(meta, ensure_ascii=False))
     elif meta:
         parts.append(str(meta))
-    return " ".join(p for p in parts if p).strip() or " "
+    text = " ".join(p for p in parts if p).strip() or (product.get("title") or " ")
+    return text[:2000] if len(text) > 2000 else text
 
 
 def main(headless: bool = True, skip_embeddings: bool = False, limit: Optional[int] = None) -> None:

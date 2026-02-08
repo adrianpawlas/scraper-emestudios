@@ -18,9 +18,10 @@ CATEGORY_URLS = [
     "https://emestudios.com/en-at/collections/accessories",
 ]
 
-# Regex pattern for "plain product on white" images (cdn/shop/files/YYYY_MM_DDEME*.webp)
-# These get image_embedding; all other product images go to additional_images.
-EMBED_IMAGE_URL_PATTERN = r"/cdn/shop/files/\d{4}_\d{2}_\d{2}EME\d+\.webp"
+# Regex pattern for "plain product on white" images:
+# - /cdn/shop/files/YYYY_MM_DDEME*.webp
+# - /cdn/shop/files/EME*_uuid.webp (e.g. EME25_60b618fe-beb7-42e3-9af1-2223b060b977.webp)
+EMBED_IMAGE_URL_PATTERN = r"/cdn/shop/files/(?:\d{4}_\d{2}_\d{2}EME\d+|EME\d+_[a-f0-9-]+)\.webp"
 
 # Scroll / wait
 SCROLL_PAUSE_SEC = 5

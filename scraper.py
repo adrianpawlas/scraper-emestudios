@@ -15,6 +15,27 @@ from config import (
 )
 
 
+def _normalize_image_url(url: str) -> Optional[str]:
+    """Normalize image URL to avoid double domain (emestudios.com//emestudios.com/...)."""
+    if not url or not isinstance(url, str):
+        return None
+    url = url.strip().split("?")[0]
+    if url.startswith(("http://", "https://")):
+        return url
+    if url.startswith("//"):
+        return "https:" + url
+    if url.startswith("/"):
+        return BASE_URL.rstrip("/") + url
+    if "cdn/shop/files/" in url:
+        idx = url.index("cdn/shop/files/")
+        return BASE_URL.rstrip("/") + "/" + url[idx:]
+    if "emestudios.com" in url:
+        idx = url.index("emestudios.com") + 14
+        path = url[idx:].lstrip("/") or ""
+        return BASE_URL.rstrip("/") + "/" + path
+    return BASE_URL.rstrip("/") + "/" + url.lstrip("/")
+
+
 def _normalize_product_url(href: str) -> str:
     """Ensure product URL is absolute and in en-at locale if possible."""
     if not href or href.startswith("#") or "javascript:" in href:
@@ -94,7 +115,26 @@ def scrape_product_page(page: Page, product_url: str) -> Optional[dict]:
     time.sleep(1)
 
     data = page.evaluate("""(baseUrl) => {
-        const out = { title: null, description: null, category: null, gender: null, price: null, sale: null, imageUrls: [], categories: [], metadata: {} };
+        const out = { title: null, description: null, category: null, gender: null, price: null, sale: null, compareAtPrice: null, imageUrls: [], categories: [], metadata: {} };
+
+        // Normalize image URL - avoid double domain (emestudios.com//emestudios.com/...)
+        function normalizeImageUrl(u) {
+            if (!u) return null;
+            u = String(u).trim().split('?')[0];
+            if (u.startsWith('http://') || u.startsWith('https://')) return u;
+            if (u.startsWith('//')) return 'https:' + u;
+            if (u.startsWith('/')) return baseUrl.replace(/\\/$/, '') + u;
+            if (u.includes('cdn/shop/files/')) {
+                const idx = u.indexOf('cdn/shop/files/');
+                return baseUrl.replace(/\\/$/, '') + '/' + u.substring(idx);
+            }
+            if (u.includes('emestudios.com')) {
+                const i = u.indexOf('emestudios.com') + 14;
+                const path = u.substring(i).replace(/^\\/+/, '/') || '/';
+                return baseUrl.replace(/\\/$/, '') + path;
+            }
+            return baseUrl.replace(/\\/$/, '') + '/' + u.replace(/^\\/+/, '');
+        }
 
         // Title - common selectors
         const titleEl = document.querySelector('h1') || document.querySelector('[class*="product"][class*="title"]') || document.querySelector('meta[property="og:title"]');
@@ -115,9 +155,8 @@ def scrape_product_page(page: Page, product_url: str) -> Optional[dict]:
                 u.split(/[,\\s]+/).forEach(part => {
                     const url = part.trim().split(' ')[0];
                     if (url && (url.includes('cdn/shop') || url.includes('emestudios'))) {
-                        let full = url.startsWith('http') ? url : (baseUrl + (url.startsWith('/') ? url : '/' + url));
-                        full = full.split('?')[0];
-                        if (full.includes('/files/') || full.includes('/products/')) urlSet.add(full);
+                        const full = normalizeImageUrl(url);
+                        if (full && (full.includes('/files/') || full.includes('/products/'))) urlSet.add(full);
                     }
                 });
             }
@@ -126,9 +165,8 @@ def scrape_product_page(page: Page, product_url: str) -> Optional[dict]:
         document.querySelectorAll('[data-src*="cdn/shop"], [href*="cdn/shop/files"]').forEach(el => {
             const u = el.getAttribute('data-src') || el.getAttribute('href');
             if (u) {
-                let full = u.startsWith('http') ? u : (baseUrl + (u.startsWith('/') ? u : '/' + u));
-                full = full.split('?')[0];
-                if (full.includes('/files/')) urlSet.add(full);
+                const full = normalizeImageUrl(u);
+                if (full && full.includes('/files/')) urlSet.add(full);
             }
         });
         out.imageUrls = Array.from(urlSet);
@@ -164,7 +202,8 @@ def scrape_product_page(page: Page, product_url: str) -> Optional[dict]:
                             const imgs = Array.isArray(productSchema.image) ? productSchema.image : [productSchema.image];
                             imgs.forEach(i => {
                                 const u = typeof i === 'string' ? i : i.url;
-                                if (u) urlSet.add(u.split('?')[0]);
+                                const full = normalizeImageUrl(u);
+                                if (full) urlSet.add(full);
                             });
                         }
                     }
@@ -173,7 +212,7 @@ def scrape_product_page(page: Page, product_url: str) -> Optional[dict]:
                     out.description = out.description || json.description;
                     if (json.image) {
                         const imgs = Array.isArray(json.image) ? json.image : [json.image];
-                        imgs.forEach(i => { const u = typeof i === 'string' ? i : i.url; if (u) urlSet.add(u.split('?')[0]); });
+                        imgs.forEach(i => { const u = typeof i === 'string' ? i : i.url; const full = normalizeImageUrl(u); if (full) urlSet.add(full); });
                     }
                 } else if (json.product || json.products) {
                     const p = json.product || (json.products && json.products[0]);
@@ -183,21 +222,28 @@ def scrape_product_page(page: Page, product_url: str) -> Optional[dict]:
                         if (p.variants && p.variants[0]) {
                             const v = p.variants[0];
                             out.price = (v.price || v.price_range?.min) ? String(v.price || v.price_range.min) : out.price;
+                            out.compareAtPrice = (v.compare_at_price != null && v.compare_at_price !== '') ? String(v.compare_at_price) : null;
                             out.metadata.priceCurrency = v.price ? (v.price_currency || 'USD') : out.metadata.price_currency;
                         }
                         if (p.images && p.images.length) {
                             p.images.forEach(img => {
                                 const u = typeof img === 'string' ? img : (img.src || img.url);
-                                if (u) urlSet.add(u.split('?')[0]);
+                                const full = normalizeImageUrl(u);
+                                if (full) urlSet.add(full);
                             });
                         }
                         if (p.media && p.media.length) {
                             p.media.forEach(m => {
-                                if (m.src || m.preview_image?.src) urlSet.add((m.src || m.preview_image.src).split('?')[0]);
+                                const u = m.src || (m.preview_image && m.preview_image.src);
+                                const full = normalizeImageUrl(u);
+                                if (full) urlSet.add(full);
                             });
                         }
                         if (p.type) out.category = p.type;
                         if (p.tags) out.metadata.tags = Array.isArray(p.tags) ? p.tags.join(', ') : p.tags;
+                        if (p.vendor) out.metadata.vendor = p.vendor;
+                        if (p.handle) out.metadata.handle = p.handle;
+                        if (p.collections && p.collections.length) out.metadata.collections = p.collections.map(c => c.title || c.handle || '').join(', ');
                     }
                 }
             } catch (e) {}
@@ -227,7 +273,11 @@ def scrape_product_page(page: Page, product_url: str) -> Optional[dict]:
     if not data.get("imageUrls"):
         og_image = page.locator('meta[property="og:image"]').get_attribute("content")
         if og_image:
-            data["imageUrls"] = [og_image.split("?")[0]]
+            data["imageUrls"] = [_normalize_image_url(og_image)]
+
+    # Normalize all image URLs in Python (in case any slipped through)
+    urls = data.get("imageUrls") or []
+    data["imageUrls"] = [_normalize_image_url(u) for u in urls if _normalize_image_url(u)]
 
     # Split category string by & or comma for "Sweaters & Hoodies" -> "Sweaters, Hoodies"
     category = (data.get("category") or data.get("metadata", {}).get("breadcrumb") or "").strip()
@@ -235,46 +285,74 @@ def scrape_product_page(page: Page, product_url: str) -> Optional[dict]:
         category = ", ".join(s.strip() for s in category.split("&"))
     data["category"] = category or None
 
-    # Price string: build "20.90USD,450CZK" from metadata/price
-    price_str = _build_price_string(data)
+    # Price and sale: build from metadata/price; sale only when compare_at_price > price
+    price_str, sale_str = _build_price_and_sale(data)
     data["price"] = price_str
-    data["sale"] = data.get("sale") or price_str  # Same as price if on sale; we don't detect sale separately here
+    data["sale"] = sale_str  # None if no sale; sale price only when compare_at_price > price
 
-    # Gender: infer from category or leave null (unisex)
+    # Gender: infer from category, tags, handle, collections
     data["gender"] = _infer_gender(data)
 
     return data
 
 
-def _build_price_string(data: dict) -> str:
-    """Build price string like '20.90USD,450CZK' from page data."""
-    parts = []
+def _normalize_amount(amount_str: str) -> Optional[float]:
+    """Parse amount; if Shopify cents (large int, no decimal), divide by 100."""
+    if not amount_str:
+        return None
+    num = re.sub(r"[^\d.,]", "", amount_str).replace(",", ".")
+    if not re.match(r"^\d+\.?\d*$", num):
+        return None
+    val = float(num)
+    # Shopify stores price in cents: 8900 = $89.00; treat as cents if >= 100 and no decimal
+    if val >= 100 and "." not in num and val == int(val):
+        val = val / 100.0
+    return val
+
+
+def _build_price_and_sale(data: dict) -> Tuple[str, Optional[str]]:
+    """Build (price_str, sale_str). Sale is only set when compare_at_price > price."""
     meta = data.get("metadata") or {}
-    price_raw = (data.get("price") or meta.get("priceRaw") or "").strip()
     currency = (meta.get("priceCurrency") or "USD").upper()
-    if price_raw:
-        num = re.sub(r"[^\d.,]", "", price_raw)
-        num = num.replace(",", ".")
-        if re.match(r"^\d+\.?\d*$", num):
-            parts.append(f"{num}{currency}")
-    if not parts and price_raw:
-        # Fallback: e.g. "$65" -> 65USD
+    price_raw = (data.get("price") or meta.get("priceRaw") or "").strip()
+    compare_raw = (data.get("compareAtPrice") or "").strip()
+
+    price_val = _normalize_amount(price_raw)
+    compare_val = _normalize_amount(compare_raw) if compare_raw else None
+
+    if price_val is None and price_raw:
         m = re.search(r"([\d.,]+)\s*(\$|€|USD|EUR|CZK|PLN)?", price_raw)
         if m:
-            amount = m.group(1).replace(",", ".")
-            curr = (m.group(2) or "USD").replace("$", "USD").replace("€", "EUR")
-            parts.append(f"{amount}{curr}")
-    return ",".join(parts) if parts else ""
+            price_val = _normalize_amount(m.group(1))
+            if m.group(2):
+                currency = (m.group(2) or "USD").replace("$", "USD").replace("€", "EUR").upper()
+
+    if price_val is None:
+        return ("", None)
+
+    # Sale only when compare_at_price exists and is greater than price
+    if compare_val is not None and compare_val > price_val:
+        price_str = f"{compare_val:.2f}".rstrip("0").rstrip(".") + currency
+        sale_str = f"{price_val:.2f}".rstrip("0").rstrip(".") + currency
+        return (price_str, sale_str)
+
+    price_str = f"{price_val:.2f}".rstrip("0").rstrip(".") + currency
+    return (price_str, None)
 
 
 def _infer_gender(data: dict) -> Optional[str]:
-    """Infer 'man', 'woman', or null from category/tags."""
+    """Infer 'man', 'woman', or null from category, tags, handle, collections."""
+    meta = data.get("metadata") or {}
     cat = (data.get("category") or "").lower()
-    tags = (data.get("metadata") or {}).get("tags") or ""
-    combined = (cat + " " + tags).lower()
-    if any(w in combined for w in ["men", "man", "male"]):
+    tags = (meta.get("tags") or "").lower()
+    handle = (meta.get("handle") or "").lower()
+    collections = (meta.get("collections") or "").lower()
+    vendor = (meta.get("vendor") or "").lower()
+    combined = " ".join([cat, tags, handle, collections, vendor])
+
+    if any(w in combined for w in ["men", "man", "male", "mens", "men's"]):
         return "man"
-    if any(w in combined for w in ["women", "woman", "female"]):
+    if any(w in combined for w in ["women", "woman", "female", "womens", "women's", "ladies"]):
         return "woman"
     return None
 
