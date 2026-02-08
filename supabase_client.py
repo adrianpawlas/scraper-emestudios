@@ -77,8 +77,13 @@ def upsert_products(
         te = info_embeddings[i] if i < len(info_embeddings) else None
         rows.append(_row_from_product(p, ie, te))
 
-    client.table("products").upsert(
-        rows,
-        on_conflict="source,product_url",
-        ignore_duplicates=False,
-    )
+    try:
+        result = client.table("products").upsert(
+            rows,
+            on_conflict="source,product_url",
+            ignore_duplicates=False,
+        ).execute()
+        print(f"Upserted {len(result.data)} rows to Supabase.")
+    except Exception as e:
+        print(f"Supabase upsert error: {e}")
+        raise
