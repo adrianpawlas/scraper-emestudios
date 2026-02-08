@@ -39,6 +39,7 @@ Scrapes product data from [Eme Studios](https://emestudios.com), generates 768�
 
    - `python main.py --no-headless` – show browser.
    - `python main.py --skip-embeddings` – scrape only, no embeddings (faster for testing).
+   - `python main.py --limit=5` – scrape only 5 products (quick test).
 
 ## Automation (GitHub Actions)
 

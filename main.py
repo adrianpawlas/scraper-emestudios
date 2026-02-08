@@ -29,9 +29,12 @@ def _info_text_for_embedding(product: dict) -> str:
     return " ".join(p for p in parts if p).strip() or " "
 
 
-def main(headless: bool = True, skip_embeddings: bool = False) -> None:
-    print("Collecting product URLs from category pages...")
-    products = run_scraper(headless=headless)
+def main(headless: bool = True, skip_embeddings: bool = False, limit: Optional[int] = None) -> None:
+    if limit:
+        print(f"Collecting product URLs (limit={limit} products for testing)...")
+    else:
+        print("Collecting product URLs from category pages...")
+    products = run_scraper(headless=headless, limit=limit)
     print(f"Scraped {len(products)} products.")
 
     if not products:
@@ -71,7 +74,18 @@ def main(headless: bool = True, skip_embeddings: bool = False) -> None:
     print("Done.")
 
 
+def _parse_limit() -> Optional[int]:
+    for arg in sys.argv:
+        if arg.startswith("--limit="):
+            try:
+                return int(arg.split("=", 1)[1])
+            except ValueError:
+                pass
+    return None
+
+
 if __name__ == "__main__":
     headless = "--no-headless" not in sys.argv
     skip_embeddings = "--skip-embeddings" in sys.argv
-    main(headless=headless, skip_embeddings=skip_embeddings)
+    limit = _parse_limit()
+    main(headless=headless, skip_embeddings=skip_embeddings, limit=limit)

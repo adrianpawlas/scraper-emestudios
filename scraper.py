@@ -36,8 +36,11 @@ def _is_embed_image_url(url: str) -> bool:
     return bool(re.search(EMBED_IMAGE_URL_PATTERN, url))
 
 
-def collect_product_urls_from_category(page: Page, category_url: str) -> List[str]:
-    """Open category page, handle infinite scroll, return list of product URLs."""
+def collect_product_urls_from_category(
+    page: Page, category_url: str, max_urls: Optional[int] = None
+) -> List[str]:
+    """Open category page, handle infinite scroll, return list of product URLs.
+    If max_urls is set, stop once we have at least that many (faster for testing)."""
     seen: set[str] = set()
     page.goto(category_url, wait_until="domcontentloaded", timeout=60000)
     time.sleep(2)
@@ -52,6 +55,8 @@ def collect_product_urls_from_category(page: Page, category_url: str) -> List[st
             url = _normalize_product_url(raw)
             if url:
                 seen.add(url)
+        if max_urls is not None and len(seen) >= max_urls:
+            return list(seen)[:max_urls]
 
         # Scroll to bottom to trigger lazy load
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
@@ -294,29 +299,35 @@ def split_embed_and_extra_images(image_urls: List[str]) -> Tuple[Optional[str], 
     return embed_url, additional
 
 
-def collect_all_product_urls(browser: Browser) -> List[str]:
-    """Collect product URLs from all category pages."""
+def collect_all_product_urls(browser: Browser, max_urls: Optional[int] = None) -> List[str]:
+    """Collect product URLs from all category pages. If max_urls set, stop when we have enough."""
     page = browser.new_page()
     seen: set[str] = set()
     try:
         for cat_url in CATEGORY_URLS:
-            urls = collect_product_urls_from_category(page, cat_url)
+            urls = collect_product_urls_from_category(page, cat_url, max_urls=max_urls)
             for u in urls:
                 seen.add(u)
+            if max_urls is not None and len(seen) >= max_urls:
+                break
     finally:
         page.close()
-    return list(seen)
+    result = list(seen)
+    if max_urls is not None:
+        result = result[:max_urls]
+    return result
 
 
-def run_scraper(headless: bool = True) -> List[dict]:
-    """Run full scrape: collect all product URLs, then scrape each product. Returns list of product dicts."""
+def run_scraper(headless: bool = True, limit: Optional[int] = None) -> List[dict]:
+    """Run full scrape: collect all product URLs, then scrape each product. Returns list of product dicts.
+    If limit is set, only the first `limit` product URLs are scraped (faster for testing)."""
     all_urls = []
     products = []
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)
         try:
-            all_urls = collect_all_product_urls(browser)
+            all_urls = collect_all_product_urls(browser, max_urls=limit)
         finally:
             browser.close()
 
