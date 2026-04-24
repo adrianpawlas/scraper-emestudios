@@ -1,49 +1,83 @@
 name: Eme Studios Scraper
 
 on:
+  schedule:
+    # Schedule: Sun 6pm, Thu 6pm UTC
+    - cron: '0 18 * * 0'
+    - cron: '0 18 * * 4'
   workflow_dispatch:
     inputs:
-      limit:
-        description: 'Product limit per category (0=full)'
+      test_mode:
+        description: 'Run in test mode (3 products only)'
         required: false
-        default: '0'
-        type: string
-  schedule:
-    - cron: '0 18 * * 0'  # Sunday 6PM
-    - cron: '0 18 * * 4'  # Thursday 6PM
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      max_products:
+        description: 'Maximum number of products to scrape (optional)'
+        required: false
+        type: number
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    timeout-minutes: 720
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    - name: Checkout code
+      uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
 
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          playwright install chromium
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libglib2.0-0 libsm6 libxext6 libxrender-dev libgomp1
 
-      - name: Run scraper
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: |
-          if [ "${{ inputs.limit }}" != "0" ]; then
-            python3 run.py --limit ${{ inputs.limit }}
-          else
-            python3 run.py
-        timeout-minutes: 60
+    - name: Cache pip
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
 
-      - name: Upload logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: scraper-logs
-          path: scraper.log
-          retention-days: 7
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install torch --index-url https://download.pytorch.org/whl/cpu
+        pip install -r requirements.txt
+
+    - name: Run scraper
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      run: |
+        TEST_MODE="${{ github.event.inputs.test_mode }}"
+        MAX_PRODS="${{ github.event.inputs.max_products }}"
+        
+        if [ "$TEST_MODE" = "true" ]; then
+          echo "Running in TEST mode..."
+          python run.py --test
+        elif [ -n "$MAX_PRODS" ]; then
+          echo "Running with max products: $MAX_PRODS"
+          python run.py --max $MAX_PRODS
+        else
+          echo "Running full scrape..."
+          python run.py
+        fi
+
+    - name: Report status
+      if: always()
+      run: |
+        if [ "${{ job.status }}" = "success" ]; then
+          echo "Scraper completed successfully"
+        else
+          echo "Scraper failed. Check logs for details."
+          exit 1
+        fi

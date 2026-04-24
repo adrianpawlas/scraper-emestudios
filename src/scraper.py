@@ -407,15 +407,31 @@ class EmeStudiosScraper:
                 
             await asyncio.sleep(0.1)
     
-    async def run(self):
+    async def run(self, test_mode=False, max_products=None, limit_per_category=0):
+        """Run the scraper.
+        
+        Args:
+            test_mode: If True, only scrape 3 products
+            max_products: Maximum total products to scrape
+            limit_per_category: Limit products per category (for testing)
+        """
         await self.init()
         
         all_products = []
         
-        for category in CATEGORIES:
-            products = await self.scrape_category(category)
+        for category in self.CATEGORIES:
+            if test_mode:
+                products = await self.scrape_category(category, limit=3)
+            elif limit_per_category > 0:
+                products = await self.scrape_category(category, limit=limit_per_category)
+            else:
+                products = await self.scrape_category(category)
+            
             all_products.extend(products)
-            print(f"Category complete. Total: {len(products)}")
+            print(f"Category {category}: {len(products)} products")
+            
+            if max_products and len(all_products) >= max_products:
+                break
         
         if all_products:
             await self.save_products(all_products)
@@ -423,6 +439,27 @@ class EmeStudiosScraper:
         print(f"\n{'='*50}")
         print(f"COMPLETE! Total products scraped: {len(all_products)}")
         print(f"{'='*50}")
+        
+        await self.close()
+    
+    async def scrape_single_product(self, url: str):
+        """Scrape a single product URL."""
+        await self.init()
+        
+        print(f"Single product: {url}")
+        await self.page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        await asyncio.sleep(2)
+        
+        html = await self.page.content()
+        product = await self.parse_product(html, url)
+        
+        if product.image_url:
+            product.image_embedding = await self.embedder.get_image_embedding(product.image_url)
+            text_info = f"{product.title} {product.brand} {product.description or ''} {product.category or ''} {product.gender or ''} {product.price or ''}"
+            product.info_embedding = await self.embedder.get_text_embedding(text_info)
+        
+        await self.save_products([product])
+        print(f"Saved: {product.title}")
         
         await self.close()
 
