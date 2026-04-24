@@ -1,52 +1,66 @@
 #!/bin/bash
-# Setup automation for Eme Studios Scraper
-# Run this script to set up cron jobs
+# Eme Studios Scraper - Setup and Automation
+# Run this to set up automatic scheduling
 
 SCRIPT_DIR="/Users/adrianpawlas/Finds/Scrapers/scraper-emestudios"
-CRON_LINE="0 18 * * 0,4 $SCRIPT_DIR/run_scraper.sh >> $SCRIPT_DIR/scraper.log 2>&1"
+LOG_FILE="$SCRIPT_DIR/scraper.log"
+PLIST_FILE="$SCRIPT_DIR/com.emestudios.scraper.plist"
 
-echo "Setting up Eme Studios Scraper automation..."
+echo "========================================="
+echo "Eme Studios Scraper Setup"
+echo "========================================="
 echo ""
 
-# Check if cron exists
-if ! command -v crontab &> /dev/null; then
-    echo "ERROR: crontab not found. Please install or use a different scheduler."
+# Ensure log file exists
+touch "$LOG_FILE"
+echo "Log file: $LOG_FILE"
+echo ""
+
+# Check if scraper works
+echo "Testing scraper..."
+cd "$SCRIPT_DIR"
+python3 -c "from src.scraper import EmeStudiosScraper; print('Scraper OK')" 2>/dev/null
+if [ $? -eq 0 ]; then
+    echo "Scraper module: OK"
+else
+    echo "ERROR: Scraper module not working"
     exit 1
 fi
-
-# Add cron job
-echo "Adding cron job: $CRON_LINE"
 echo ""
 
-# Check existing crontab
-echo "Current crontab:"
-crontab -l 2>/dev/null || echo "(empty)"
+# Menu
+echo "Automation Options:"
+echo "-----------------"
+echo "1. Add cron job (Sundays + Thursdays at 6PM)"
+echo "2. Install launchd daemon (requires sudo)"
+echo "3. Manual run only"
 echo ""
+echo -n "Choose [1-3]: "
+read choice
 
-# The cron job will run:
-# - At 18:00 (6PM)
-# - On Sundays (0) and Thursdays (4)
-# - Every week
-
-echo "To add the cron job manually, run:"
-echo "  crontab -e"
-echo ""
-echo "Then add this line:"
-echo "  $CRON_LINE"
-echo ""
-
-# Try to add automatically
-echo "Attempting to add cron job..."
-(crontab -l 2>/dev/null | grep -v "scraper-emestudios"; echo "$CRON_LINE") | crontab -
-
-if [ $? -eq 0 ]; then
-    echo "SUCCESS! Cron job added."
-    echo "Crontab now contains:"
-    crontab -l
-else
-    echo "Could not add cron job automatically."
-    echo "This may require special permissions or use of launchd instead."
-fi
+case $choice in
+    1)
+        echo ""
+        echo "To add cron job, run:"
+        echo "  crontab -e"
+        echo ""
+        echo "Then add this line:"
+        echo "  0 18 * * 0,4 $SCRIPT_DIR/run_scraper.sh >> $LOG_FILE 2>&1"
+        echo ""
+        echo "Or run this command (may require permissions):"
+        echo "  (crontab -l 2>/dev/null; echo '0 18 * * 0,4 $SCRIPT_DIR/run_scraper.sh >> $LOG_FILE 2>&1') | crontab -"
+        ;;
+    2)
+        echo ""
+        echo "To install launchd daemon, run:"
+        echo "  sudo cp $PLIST_FILE /Library/LaunchDaemons/"
+        echo "  sudo launchctl load /Library/LaunchDaemons/com.emestudios.scraper.plist"
+        ;;
+    3)
+        echo ""
+        echo "Manual run: python3 run.py"
+        ;;
+esac
 
 echo ""
 echo "Setup complete!"
