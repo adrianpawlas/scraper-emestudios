@@ -11,3 +11,4 @@ httpx>=0.25.0
 numpy>=1.24.0
 torch>=2.0.0
 accelerate>=0.25.0
+protobuf>=3.20.0
