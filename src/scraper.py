@@ -13,7 +13,7 @@ from playwright.async_api import async_playwright
 from supabase import create_client
 
 import torch
-from transformers import AutoModel, AutoProcessor
+from transformers import SiglipModel, SiglipProcessor
 from PIL import Image
 from io import BytesIO
 
@@ -63,8 +63,8 @@ class Embedder:
         print(f"Loading {MODEL_NAME}...")
         cache = os.path.expanduser("~/.cache/huggingface/hub")
         
-        self.model = AutoModel.from_pretrained(MODEL_NAME, cache_dir=cache).to(self.device).eval()
-        self.processor = AutoProcessor.from_pretrained(MODEL_NAME, cache_dir=cache)
+        self.model = SiglipModel.from_pretrained(MODEL_NAME, cache_dir=cache).to(self.device).eval()
+        self.processor = SiglipProcessor.from_pretrained(MODEL_NAME, cache_dir=cache)
         self.client = httpx.AsyncClient(timeout=30.0)
         print(f"Loaded! Using {self.device}")
         
