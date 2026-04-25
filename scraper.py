@@ -15,9 +15,10 @@ class ProductScraper:
         self.embedding_service = EmbeddingService()
         self.product_links = []
 
-    async def scroll_page(self, page, max_scrolls: int = 80):
+    async def scroll_page(self, page, max_scrolls: int = 120):
         last_count = 0
         scroll_attempts = 0
+        no_new_count = 0
         
         # First wait for initial load
         await page.wait_for_timeout(3000)
@@ -48,10 +49,14 @@ class ProductScraper:
             if current_count > last_count:
                 print(f"    Products loaded: {current_count}")
                 last_count = current_count
+                no_new_count = 0
                 scroll_attempts = 0
             else:
+                no_new_count += 1
                 scroll_attempts += 1
-                if scroll_attempts >= 5:
+                # Stop only after 10 consecutive scrolls with no new products
+                if no_new_count >= 10:
+                    print(f"    No new products after {no_new_count} scrolls. Stopping.")
                     break
 
         return await page.evaluate("""() => {
@@ -59,9 +64,13 @@ class ProductScraper:
             const seen = new Set();
             document.querySelectorAll('a[href*="/product/"]').forEach(a => {
                 const href = a.getAttribute('href');
-                if (href && !seen.has(href)) {
-                    seen.add(href);
-                    links.push(href);
+                if (href && href.includes('/product/')) {
+                    // Extract just the handle
+                    const handle = href.split('/product/')[1].split('?')[0].split('#')[0];
+                    if (handle && !seen.has(handle)) {
+                        seen.add(handle);
+                        links.push(handle);
+                    }
                 }
             });
             return links;
@@ -69,6 +78,13 @@ class ProductScraper:
 
     async def scrape_collection_page(self, url: str) -> list[str]:
         product_urls = []
+        
+        # Determine base URL from the category URL
+        # e.g., https://emestudios.com/collections/all -> https://emestudios.com
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
@@ -79,17 +95,10 @@ class ProductScraper:
 
                 links = await self.scroll_page(page)
                 
-                # Build full URLs from relative paths
-                for link in links:
-                    if '/product/' in link:
-                        if link.startswith('/'):
-                            # Relative URL - prepend base
-                            from urllib.parse import urlparse
-                            parsed = urlparse(url)
-                            full_url = f"{parsed.scheme}://{parsed.netloc}{link}"
-                        else:
-                            full_url = link.split('?')[0].split('#')[0]
-                        product_urls.append(full_url)
+                # Build full URLs from handles
+                for handle in links:
+                    full_url = f"{base}/product/{handle}"
+                    product_urls.append(full_url)
 
                 await browser.close()
             except Exception as e:
