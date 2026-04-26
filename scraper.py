@@ -15,72 +15,67 @@ class ProductScraper:
         self.embedding_service = EmbeddingService()
         self.product_links = []
 
-    async def scroll_page(self, page, max_scrolls: int = 120):
+    async def scroll_page(self, page, max_scrolls: int = 80):
         last_count = 0
-        scroll_attempts = 0
         no_new_count = 0
         
-        # First wait for initial load
-        await page.wait_for_timeout(3000)
+        await page.wait_for_timeout(5000)
 
         for i in range(max_scrolls):
-            # Scroll to bottom
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             await asyncio.sleep(2)
             
-            # Also try to trigger any "load more" buttons
+            await page.evaluate("window.scrollBy(0, -500)")
+            await asyncio.sleep(1)
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await asyncio.sleep(2)
+            
             try:
                 await page.evaluate("""() => {
-                    // Click any load more buttons
-                    document.querySelectorAll('button, a').forEach(el => {
-                        const text = el.textContent.toLowerCase();
-                        if (text.includes('load more') || text.includes('ver más') || text.includes('see more')) {
+                    document.querySelectorAll('button, a, [role="button"]').forEach(el => {
+                        const text = (el.textContent || '').toLowerCase();
+                        if (text.includes('load') && text.includes('more')) {
                             el.click();
                         }
                     });
                 }""")
+                await asyncio.sleep(1)
             except:
                 pass
-            
-            await asyncio.sleep(1)
 
-            current_count = await page.evaluate("document.querySelectorAll('a[href*=\"/product/\"]').length")
+            current_count = await page.locator('a[href*="/product/"]').count()
 
             if current_count > last_count:
                 print(f"    Products loaded: {current_count}")
                 last_count = current_count
                 no_new_count = 0
-                scroll_attempts = 0
             else:
                 no_new_count += 1
-                scroll_attempts += 1
-                # Stop only after 10 consecutive scrolls with no new products
                 if no_new_count >= 10:
                     print(f"    No new products after {no_new_count} scrolls. Stopping.")
                     break
 
-        return await page.evaluate("""() => {
-            const links = [];
+        handles = await page.evaluate("""() => {
             const seen = new Set();
+            const results = [];
             document.querySelectorAll('a[href*="/product/"]').forEach(a => {
                 const href = a.getAttribute('href');
                 if (href && href.includes('/product/')) {
-                    // Extract just the handle
                     const handle = href.split('/product/')[1].split('?')[0].split('#')[0];
                     if (handle && !seen.has(handle)) {
                         seen.add(handle);
-                        links.push(handle);
+                        results.push(handle);
                     }
                 }
             });
-            return links;
+            return results;
         }""")
+        
+        return handles
 
     async def scrape_collection_page(self, url: str) -> list[str]:
         product_urls = []
         
-        # Determine base URL from the category URL
-        # e.g., https://emestudios.com/collections/all -> https://emestudios.com
         from urllib.parse import urlparse
         parsed = urlparse(url)
         base = f"{parsed.scheme}://{parsed.netloc}"
@@ -93,10 +88,9 @@ class ProductScraper:
                 await page.goto(url, timeout=60000)
                 await page.wait_for_timeout(3000)
 
-                links = await self.scroll_page(page)
+                handles = await self.scroll_page(page)
                 
-                # Build full URLs from handles
-                for handle in links:
+                for handle in handles:
                     full_url = f"{base}/product/{handle}"
                     product_urls.append(full_url)
 

@@ -10,7 +10,7 @@ BRAND = "Eme Studios"
 BASE_URL = "https://emestudios.com"
 
 CATEGORY_URLS = [
-    "https://emestudios.com/collections/all",
+    "https://emestudios.com/be/en/all-products",
 ]
 
 EMBEDDING_MODEL = "google/siglip-base-patch16-384"
