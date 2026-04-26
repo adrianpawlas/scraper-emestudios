@@ -68,11 +68,23 @@ class DatabaseService:
         if not product_urls:
             return {}
         
-        result = self.client.table("products").select(
-            "id, product_url, title, price, image_url, compressed_image_url, category, metadata, additional_images"
-        ).in_("product_url", product_urls).execute()
+        all_existing = {}
+        chunk_size = 100
         
-        return {p["product_url"]: p for p in result.data}
+        for i in range(0, len(product_urls), chunk_size):
+            chunk = product_urls[i:i + chunk_size]
+            try:
+                result = self.client.table("products").select(
+                    "id, product_url, title, price, image_url, compressed_image_url, category, metadata, additional_images"
+                ).in_("product_url", chunk).execute()
+                
+                for p in result.data:
+                    all_existing[p["product_url"]] = p
+            except Exception as e:
+                logging.warning(f"Error fetching chunk {i//chunk_size + 1}: {e}")
+                continue
+        
+        return all_existing
 
     def has_changed(self, existing: dict, new_product: dict) -> bool:
         if not existing:
@@ -143,11 +155,18 @@ class DatabaseService:
             
             stale_urls = [p["product_url"] for p in all_products if p["product_url"] not in seen_product_urls]
             
-            if stale_urls:
-                delete_result = self.client.table("products").delete().in_("product_url", stale_urls).execute()
-                return {"deleted": len(stale_urls)}
+            deleted_count = 0
+            for i in range(0, len(stale_urls), 100):
+                chunk = stale_urls[i:i + 100]
+                if chunk:
+                    try:
+                        delete_result = self.client.table("products").delete().in_("product_url", chunk).execute()
+                        deleted_count += len(chunk)
+                    except Exception as e:
+                        logging.warning(f"Error deleting stale chunk: {e}")
+                        continue
             
-            return {"deleted": 0}
+            return {"deleted": deleted_count}
             
         except Exception as e:
             logging.error(f"Error deleting stale products: {e}")
