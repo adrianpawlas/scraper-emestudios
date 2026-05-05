@@ -15,7 +15,7 @@ class ProductScraper:
         self.embedding_service = EmbeddingService()
         self.product_links = []
 
-    async def scroll_page(self, page, max_scrolls: int = 80):
+    async def scroll_page(self, page, max_scrolls: int = 100):
         last_count = 0
         no_new_count = 0
         
@@ -25,10 +25,12 @@ class ProductScraper:
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             await asyncio.sleep(2)
             
-            await page.evaluate("window.scrollBy(0, -500)")
-            await asyncio.sleep(1)
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await asyncio.sleep(2)
+            # Multiple scroll bounces to trigger lazy loading
+            for _ in range(3):
+                await page.evaluate("window.scrollBy(0, -300)")
+                await asyncio.sleep(0.5)
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await asyncio.sleep(1)
             
             try:
                 await page.evaluate("""() => {
@@ -51,7 +53,7 @@ class ProductScraper:
                 no_new_count = 0
             else:
                 no_new_count += 1
-                if no_new_count >= 10:
+                if no_new_count >= 15:
                     print(f"    No new products after {no_new_count} scrolls. Stopping.")
                     break
 
@@ -146,6 +148,7 @@ class ProductScraper:
             html = await page.content()
             soup = BeautifulSoup(html, "html.parser")
 
+            # Try JSON-LD first
             scripts = soup.find_all("script", {"type": "application/ld+json"})
             for script in scripts:
                 try:
@@ -186,6 +189,23 @@ class ProductScraper:
                 og_image = soup.find("meta", {"property": "og:image"})
                 if og_image:
                     info["image_url"] = og_image.get("content", "")
+
+            # Fallback: scrape image from DOM
+            if not info.get("image_url"):
+                img_result = await page.evaluate("""() => {
+                    const img = document.querySelector('.product-image img') ||
+                               document.querySelector('[itemprop="image"]') ||
+                               document.querySelector('.product-gallery img') ||
+                               document.querySelector('.pdp-image img') ||
+                               document.querySelector('img[src*="product"]');
+                    return img ? img.src : null;
+                }""")
+                if img_result:
+                    info["image_url"] = img_result
+            
+            # Ensure we have an image URL (required by DB)
+            if not info.get("image_url"):
+                info["image_url"] = f"https://emestudios.com{url}"
 
             if not info.get("description"):
                 meta_desc = soup.find("meta", {"name": "description"})
