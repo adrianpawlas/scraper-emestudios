@@ -93,7 +93,8 @@ class ProductScraper:
                 handles = await self.scroll_page(page)
                 
                 for handle in handles:
-                    full_url = f"{base}/product/{handle}"
+                    # Fix: include locale path /es/en/ in URL
+                    full_url = f"{base}/es/en/product/{handle}"
                     product_urls.append(full_url)
 
                 await browser.close()
@@ -185,23 +186,41 @@ class ProductScraper:
                 if og_title:
                     info["title"] = og_title.get("content", "")
 
-            if not info.get("image_url"):
-                og_image = soup.find("meta", {"property": "og:image"})
-                if og_image:
-                    info["image_url"] = og_image.get("content", "")
-
-            # Fallback: scrape image from DOM
+            # Better image scraping for Shopify - get first/main product image
             if not info.get("image_url"):
                 img_result = await page.evaluate("""() => {
-                    const img = document.querySelector('.product-image img') ||
-                               document.querySelector('[itemprop="image"]') ||
-                               document.querySelector('.product-gallery img') ||
-                               document.querySelector('.pdp-image img') ||
-                               document.querySelector('img[src*="product"]');
-                    return img ? img.src : null;
+                    // Try to get the main product image from the gallery
+                    const gallery = document.querySelector('.product-gallery, .gallery, .product-images');
+                    if (gallery) {
+                        const img = gallery.querySelector('img');
+                        if (img) return img.src || img.dataset?.src || img.dataset?.lazySrc;
+                    }
+                    // Try OG image next
+                    const og = document.querySelector('meta[property="og:image"]');
+                    if (og) return og.content;
+                    return null;
                 }""")
                 if img_result:
                     info["image_url"] = img_result
+        
+            # Get ALL additional product images from gallery
+            additional_imgs = await page.evaluate("""() => {
+                const results = [];
+                const gallery = document.querySelector('.product-gallery, .gallery, .product-images, .product-media');
+                if (gallery) {
+                    gallery.querySelectorAll('img').forEach(img => {
+                        const src = img.src || img.dataset?.src || img.dataset?.lazySrc;
+                        if (src && !src.includes('logo') && !src.includes('brand') && results.length < 6) {
+                            results.push(src);
+                        }
+                    });
+                }
+                return results;
+            }""")
+            if additional_imgs and not info.get("additional_images"):
+                info["additional_images"] = additional_imgs[1:] if len(additional_imgs) > 1 else []
+                if not info.get("image_url") and additional_imgs:
+                    info["image_url"] = additional_imgs[0]
             
             # Ensure we have an image URL (required by DB)
             if not info.get("image_url"):
