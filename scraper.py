@@ -290,7 +290,7 @@ class ProductScraper:
                     if product:
                         all_products.append(product)
                     
-                    await asyncio.sleep(0.3)
+                    await asyncio.sleep(0.5)
                     
             except Exception as e:
                 print(f"Error in category {category_url}: {e}")

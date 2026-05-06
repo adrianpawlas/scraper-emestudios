@@ -53,6 +53,7 @@ class DatabaseService:
             "price": price,
             "sale": sale,
             "additional_images": self.format_additional_images(product.get("additional_images", [])),
+            "updated_at": datetime.utcnow().isoformat(),
         }
         
         if is_new:
@@ -150,10 +151,28 @@ class DatabaseService:
             return {"deleted": 0}
         
         try:
-            result = self.client.table("products").select("product_url").eq("source", SOURCE).execute()
+            result = self.client.table("products").select("product_url, metadata").eq("source", SOURCE).execute()
             all_products = result.data or []
             
-            stale_urls = [p["product_url"] for p in all_products if p["product_url"] not in seen_product_urls]
+            stale_urls = []
+            for p in all_products:
+                product_url = p.get("product_url")
+                if product_url not in seen_product_urls:
+                    meta = p.get("metadata") or {}
+                    if isinstance(meta, str):
+                        import ast
+                        try:
+                            meta = ast.literal_eval(meta)
+                        except:
+                            meta = {}
+                    
+                    miss_count = meta.get("consecutive_misses", 0) + 1
+                    if miss_count >= 2:
+                        stale_urls.append(product_url)
+                    else:
+                        self.client.table("products").update({
+                            "metadata": str({**meta, "consecutive_misses": miss_count})
+                        }).eq("product_url", product_url).execute()
             
             deleted_count = 0
             for i in range(0, len(stale_urls), 100):
