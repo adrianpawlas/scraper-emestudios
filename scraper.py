@@ -15,7 +15,7 @@ class ProductScraper:
         self.embedding_service = EmbeddingService()
         self.product_links = []
 
-    async def scroll_page(self, page, max_scrolls: int = 100):
+    async def scroll_page(self, page, max_scrolls: int = 200):
         last_count = 0
         no_new_count = 0
         
@@ -53,7 +53,7 @@ class ProductScraper:
                 no_new_count = 0
             else:
                 no_new_count += 1
-                if no_new_count >= 15:
+                if no_new_count >= 25:
                     print(f"    No new products after {no_new_count} scrolls. Stopping.")
                     break
 
