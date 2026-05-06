@@ -94,7 +94,7 @@ class ProductScraper:
                 
                 for handle in handles:
                     # Fix: include locale path /es/en/ in URL
-                    full_url = f"{base}/es/en/product/{handle}"
+                    full_url = f"{base}/bg/en/product/{handle}"
                     product_urls.append(full_url)
 
                 await browser.close()
