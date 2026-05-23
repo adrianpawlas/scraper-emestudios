@@ -15,23 +15,22 @@ class ProductScraper:
         self.embedding_service = EmbeddingService()
         self.product_links = []
 
-    async def scroll_page(self, page, max_scrolls: int = 200):
+    async def scroll_page(self, page, max_scrolls: int = 100):
         last_count = 0
         no_new_count = 0
         
-        await page.wait_for_timeout(5000)
+        await page.wait_for_timeout(3000)
 
         for i in range(max_scrolls):
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await asyncio.sleep(2)
+            await asyncio.sleep(1.5)
             
-            # Multiple scroll bounces to trigger lazy loading
-            for _ in range(3):
-                await page.evaluate("window.scrollBy(0, -300)")
-                await asyncio.sleep(0.5)
+            for _ in range(2):
+                await page.evaluate("window.scrollBy(0, -200)")
+                await asyncio.sleep(0.3)
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                await asyncio.sleep(1)
-            
+                await asyncio.sleep(0.5)
+
             try:
                 await page.evaluate("""() => {
                     document.querySelectorAll('button, a, [role="button"]').forEach(el => {
@@ -41,7 +40,7 @@ class ProductScraper:
                         }
                     });
                 }""")
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)
             except:
                 pass
 
@@ -53,7 +52,7 @@ class ProductScraper:
                 no_new_count = 0
             else:
                 no_new_count += 1
-                if no_new_count >= 25:
+                if no_new_count >= 15:
                     print(f"    No new products after {no_new_count} scrolls. Stopping.")
                     break
 
@@ -75,6 +74,20 @@ class ProductScraper:
         
         return handles
 
+    async def dismiss_overlay(self, page):
+        try:
+            btn = page.locator("button").filter(has_text="CONTINUE IN").first
+            await btn.click(timeout=5000)
+            await page.wait_for_timeout(2000)
+        except:
+            pass
+
+    async def _create_context(self, browser):
+        return await browser.new_context(
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            viewport={"width": 1440, "height": 900}
+        )
+
     async def scrape_collection_page(self, url: str) -> list[str]:
         product_urls = []
         
@@ -82,24 +95,30 @@ class ProductScraper:
         parsed = urlparse(url)
         base = f"{parsed.scheme}://{parsed.netloc}"
         
+        locale_path = "/" + "/".join(parsed.path.strip("/").split("/")[:2]) + "/"
+        
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
+            context = await self._create_context(browser)
+            page = await context.new_page()
 
             try:
                 await page.goto(url, timeout=60000)
-                await page.wait_for_timeout(3000)
+                await page.wait_for_timeout(5000)
 
+                await self.dismiss_overlay(page)
+                
                 handles = await self.scroll_page(page)
                 
                 for handle in handles:
-                    # Fix: include locale path /es/en/ in URL
-                    full_url = f"{base}/bg/en/product/{handle}"
+                    full_url = f"{base}{locale_path}product/{handle}"
                     product_urls.append(full_url)
 
+                await context.close()
                 await browser.close()
             except Exception as e:
                 print(f"Error scraping {url}: {e}")
+                await context.close()
                 await browser.close()
 
         return list(set(product_urls))
@@ -251,11 +270,14 @@ class ProductScraper:
     async def scrape_product(self, url: str) -> dict:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
+            context = await self._create_context(browser)
+            page = await context.new_page()
 
             try:
                 await page.goto(url, timeout=60000, wait_until="domcontentloaded")
                 await page.wait_for_timeout(2000)
+
+                await self.dismiss_overlay(page)
 
                 product_info = await self.extract_product_info(page, url)
 
@@ -266,15 +288,17 @@ class ProductScraper:
                     text_info = f"{product_info.get('title', '')} {product_info.get('brand', '')} {product_info.get('description', '') or ''} {product_info.get('category', '') or ''} {product_info.get('gender', '') or ''} {product_info.get('price', '') or ''}"
                     product_info["info_embedding"] = self.embedding_service.get_text_embedding(text_info)
 
+                await context.close()
                 await browser.close()
                 return product_info
 
             except Exception as e:
                 print(f"Error scraping product {url}: {e}")
+                await context.close()
                 await browser.close()
                 return None
 
-    async def run(self) -> list[dict]:
+    async def run(self, test_mode: bool = False, test_count: int = 3) -> list[dict]:
         all_products = []
         
         for category_url in CATEGORY_URLS:
@@ -283,6 +307,10 @@ class ProductScraper:
             try:
                 product_urls = await self.scrape_collection_page(category_url)
                 print(f"  Found {len(product_urls)} products")
+                
+                if test_mode:
+                    product_urls = product_urls[:test_count]
+                    print(f"  [TEST] Limiting to {test_count} products")
                 
                 for i, url in enumerate(product_urls):
                     print(f"  [{i+1}/{len(product_urls)}] {url}")

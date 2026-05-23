@@ -17,13 +17,9 @@ async def main(test_mode=False, test_count=3, skip_embeddings=False):
     db = DatabaseService()
 
     print("\n[1/3] Scraping products from Eme Studios...")
-    products = await scraper.run()
+    products = await scraper.run(test_mode=test_mode, test_count=test_count)
 
     print(f"\nScraped {len(products)} products")
-
-    if test_mode and len(products) > test_count:
-        print(f"\n[TEST] Limiting to {test_count} products for testing...")
-        products = products[:test_count]
 
     print("\n[2/3] Processing and upserting products...")
     results = db.process_products(products)
