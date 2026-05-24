@@ -53,7 +53,6 @@ class DatabaseService:
             "price": price,
             "sale": sale,
             "additional_images": self.format_additional_images(product.get("additional_images", [])),
-            "updated_at": datetime.utcnow().isoformat(),
         }
         
         if is_new:
@@ -122,16 +121,11 @@ class DatabaseService:
                     if not batch_data:
                         continue
                         
-                    result = self.client.table("products").upsert(
+                    self.client.table("products").upsert(
                         batch_data, 
                         on_conflict="id",
                         ignore_duplicates=False
                     ).execute()
-                    
-                    if result.data:
-                        results["inserted"] += len([p for p in batch if p.get("_is_new", False)])
-                        results["updated"] += len([p for p in batch if not p.get("_is_new", True) and p.get("_changed", False)])
-                        results["skipped"] += len([p for p in batch if not p.get("_changed", True) and not p.get("_is_new", True)])
                     break
                     
                 except Exception as e:
@@ -196,6 +190,9 @@ class DatabaseService:
         existing_products = self.get_existing_products(seen_urls)
         
         products_to_upsert = []
+        new_count = 0
+        updated_count = 0
+        skipped_count = 0
         
         for product in products:
             product_url = product["product_url"]
@@ -206,17 +203,14 @@ class DatabaseService:
             changed = self.has_changed(existing, product)
             
             if is_new:
-                product["_is_new"] = True
-                product["_changed"] = True
                 prepared = self.prepare_product_data(product, is_new=True, image_changed=True)
+                new_count += 1
             elif changed:
-                product["_is_new"] = False
-                product["_changed"] = True
                 prepared = self.prepare_product_data(product, is_new=False, image_changed=image_changed)
+                updated_count += 1
             else:
-                product["_is_new"] = False
-                product["_changed"] = False
                 prepared = self.prepare_product_data(product, is_new=False, image_changed=False)
+                skipped_count += 1
             
             products_to_upsert.append(prepared)
         
@@ -225,9 +219,9 @@ class DatabaseService:
         delete_results = self.delete_stale_products(seen_urls)
         
         return {
-            "new": insert_results["inserted"],
-            "updated": insert_results["updated"],
-            "skipped": insert_results["skipped"],
+            "new": new_count,
+            "updated": updated_count,
+            "skipped": skipped_count,
             "failed": insert_results["failed"],
             "stale_deleted": delete_results.get("deleted", 0),
             "errors": insert_results["errors"]
