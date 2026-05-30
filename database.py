@@ -59,8 +59,10 @@ class DatabaseService:
             data["created_at"] = datetime.utcnow().isoformat()
         
         if is_new or image_changed:
-            data["image_embedding"] = product.get("image_embedding")
-            data["info_embedding"] = product.get("info_embedding")
+            if product.get("image_embedding") is not None:
+                data["image_embedding"] = product["image_embedding"]
+            if product.get("info_embedding") is not None:
+                data["info_embedding"] = product["info_embedding"]
         
         return data
 

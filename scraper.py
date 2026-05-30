@@ -164,18 +164,35 @@ class ProductScraper:
         except:
             pass
 
+        # --- Structured data & meta extraction (no page.evaluate) ---
         try:
             html = await page.content()
             soup = BeautifulSoup(html, "html.parser")
 
-            # Try JSON-LD first
+            # OG and meta tags (server-rendered, always available)
+            if not info.get("image_url"):
+                og_image = soup.find("meta", {"property": "og:image"})
+                if og_image:
+                    info["image_url"] = og_image.get("content", "")
+
+            if not info.get("title"):
+                og_title = soup.find("meta", {"property": "og:title"})
+                if og_title:
+                    info["title"] = og_title.get("content", "")
+
+            if not info.get("description"):
+                meta_desc = soup.find("meta", {"name": "description"})
+                if meta_desc:
+                    info["description"] = meta_desc.get("content", "")
+
+            # Try JSON-LD
             scripts = soup.find_all("script", {"type": "application/ld+json"})
             for script in scripts:
                 try:
                     data = json.loads(script.string or script.get_text())
                     if data.get("@type") == "Product":
                         info["title"] = data.get("name", info["title"])
-                        info["description"] = data.get("description", "")
+                        info["description"] = data.get("description", info["description"])
                         
                         offers = data.get("offers", {})
                         if isinstance(offers, dict):
@@ -195,60 +212,9 @@ class ProductScraper:
                                 info["additional_images"] = [str(img) for img in images[1:6]]
                             else:
                                 info["image_url"] = str(images)
-                        
                         break
                 except:
                     continue
-
-            if not info.get("title"):
-                og_title = soup.find("meta", {"property": "og:title"})
-                if og_title:
-                    info["title"] = og_title.get("content", "")
-
-            # Better image scraping for Shopify - get first/main product image
-            if not info.get("image_url"):
-                img_result = await page.evaluate("""() => {
-                    // Try to get the main product image from the gallery
-                    const gallery = document.querySelector('.product-gallery, .gallery, .product-images');
-                    if (gallery) {
-                        const img = gallery.querySelector('img');
-                        if (img) return img.src || img.dataset?.src || img.dataset?.lazySrc;
-                    }
-                    // Try OG image next
-                    const og = document.querySelector('meta[property="og:image"]');
-                    if (og) return og.content;
-                    return null;
-                }""")
-                if img_result:
-                    info["image_url"] = img_result
-        
-            # Get ALL additional product images from gallery
-            additional_imgs = await page.evaluate("""() => {
-                const results = [];
-                const gallery = document.querySelector('.product-gallery, .gallery, .product-images, .product-media');
-                if (gallery) {
-                    gallery.querySelectorAll('img').forEach(img => {
-                        const src = img.src || img.dataset?.src || img.dataset?.lazySrc;
-                        if (src && !src.includes('logo') && !src.includes('brand') && results.length < 6) {
-                            results.push(src);
-                        }
-                    });
-                }
-                return results;
-            }""")
-            if additional_imgs and not info.get("additional_images"):
-                info["additional_images"] = additional_imgs[1:] if len(additional_imgs) > 1 else []
-                if not info.get("image_url") and additional_imgs:
-                    info["image_url"] = additional_imgs[0]
-            
-            # Ensure we have an image URL (required by DB)
-            if not info.get("image_url"):
-                info["image_url"] = f"https://emestudios.com{url}"
-
-            if not info.get("description"):
-                meta_desc = soup.find("meta", {"name": "description"})
-                if meta_desc:
-                    info["description"] = meta_desc.get("content", "")
 
             url_lower = url.lower()
             if "/woman" in url_lower:
@@ -259,7 +225,40 @@ class ProductScraper:
                 info["gender"] = "woman"
 
         except Exception as e:
-            print(f"Error extracting product info: {e}")
+            print(f"Error parsing page HTML: {e}")
+
+        # --- Gallery extraction via page.evaluate (can fail if page context is lost) ---
+        try:
+            # Get first/main product image from gallery or OG meta
+            if not info.get("image_url"):
+                img_result = await page.evaluate("""() => {
+                    const og = document.querySelector('meta[property="og:image"]');
+                    if (og) return og.getAttribute('content') || og.content;
+                    return null;
+                }""")
+                if img_result:
+                    info["image_url"] = img_result
+
+            # Get additional product images from gallery
+            additional_imgs = await page.evaluate("""() => {
+                const results = [];
+                document.querySelectorAll('img').forEach(img => {
+                    const src = img.src || img.dataset?.src || img.dataset?.lazySrc;
+                    if (src && src.includes('shopify') && !src.includes('logo') && !src.includes('brand')) {
+                        results.push(src);
+                    }
+                });
+                return [...new Set(results)].slice(0, 6);
+            }""")
+            if additional_imgs and not info.get("image_url"):
+                info["image_url"] = additional_imgs[0]
+                if len(additional_imgs) > 1:
+                    info["additional_images"] = additional_imgs[1:]
+            elif additional_imgs and len(additional_imgs) > 1 and not info.get("additional_images"):
+                info["additional_images"] = [img for img in additional_imgs if img != info.get("image_url")][:5]
+
+        except Exception as e:
+            print(f"Error extracting gallery images: {e}")
 
         info["metadata"]["url"] = url
         info["metadata"]["gender"] = info["gender"]
@@ -281,12 +280,13 @@ class ProductScraper:
 
                 product_info = await self.extract_product_info(page, url)
 
+                print(f"  Getting text embedding for: {product_info.get('title', 'unknown')[:30]}")
+                text_info = f"{product_info.get('title', '')} {product_info.get('brand', '')} {product_info.get('description', '') or ''} {product_info.get('category', '') or ''} {product_info.get('gender', '') or ''} {product_info.get('price', '') or ''}"
+                product_info["info_embedding"] = self.embedding_service.get_text_embedding(text_info)
+
                 if product_info.get("image_url"):
-                    print(f"  Getting embeddings for: {product_info.get('title', 'unknown')[:30]}")
+                    print(f"  Getting image embedding for: {product_info.get('title', 'unknown')[:30]}")
                     product_info["image_embedding"] = self.embedding_service.get_image_embedding(product_info["image_url"])
-                    
-                    text_info = f"{product_info.get('title', '')} {product_info.get('brand', '')} {product_info.get('description', '') or ''} {product_info.get('category', '') or ''} {product_info.get('gender', '') or ''} {product_info.get('price', '') or ''}"
-                    product_info["info_embedding"] = self.embedding_service.get_text_embedding(text_info)
 
                 await context.close()
                 await browser.close()
