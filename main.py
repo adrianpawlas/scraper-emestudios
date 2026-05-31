@@ -1,9 +1,64 @@
 import asyncio
 import sys
 import argparse
+import traceback
 from scraper import ProductScraper
 from database import DatabaseService
 from config import SOURCE, CATEGORY_URLS
+from embedding_service import EmbeddingService
+
+
+def backfill_missing_embeddings(db: DatabaseService, emb: EmbeddingService, limit: int = 500) -> dict:
+    """Find products in the database with missing embeddings and regenerate them."""
+    print("\n--- Backfill: Checking for products with missing embeddings ---")
+    missing_products = db.find_products_missing_embeddings(limit=limit)
+    
+    if not missing_products:
+        print("  All products have embeddings. Nothing to backfill.")
+        return {"checked": 0, "updated": 0, "failed": 0}
+    
+    print(f"  Products needing backfill: {len(missing_products)}")
+    
+    updates = []
+    for p in missing_products:
+        try:
+            update = {"id": p["id"]}
+            
+            if p["_needs_info_embedding"]:
+                title = p.get("title") or ""
+                brand = p.get("brand") or ""
+                description = p.get("description") or ""
+                category = p.get("category") or ""
+                gender = p.get("gender") or ""
+                price = p.get("price") or ""
+                text_info = f"{title} {brand} {description} {category} {gender} {price}"
+                update["info_embedding"] = emb.get_text_embedding(text_info)
+                print(f"    Backfilled info_embedding for {p.get('id', 'unknown')}")
+            
+            if p["_needs_image_embedding"]:
+                image_url = p.get("image_url")
+                if image_url:
+                    update["image_embedding"] = emb.get_image_embedding(image_url)
+                    print(f"    Backfilled image_embedding for {p.get('id', 'unknown')}")
+            
+            if len(update) > 1:  # Has fields beyond just "id"
+                updates.append(update)
+                
+        except Exception as e:
+            print(f"    Error backfilling embeddings for {p.get('id', 'unknown')}: {e}")
+            traceback.print_exc()
+            continue
+    
+    if updates:
+        print(f"  Updating {len(updates)} products with new embeddings...")
+        result = db.batch_update_embeddings(updates)
+        print(f"  Updated: {result['updated']}, Failed: {result['failed']}")
+        if result.get('errors'):
+            for err in result['errors'][:3]:
+                print(f"    Error: {err}")
+        return {"checked": len(missing_products), "updated": result["updated"], "failed": result["failed"]}
+    
+    return {"checked": len(missing_products), "updated": 0, "failed": 0}
 
 
 async def main(test_mode=False, test_count=3, skip_embeddings=False):
@@ -24,11 +79,24 @@ async def main(test_mode=False, test_count=3, skip_embeddings=False):
     print("\n[2/3] Processing and upserting products...")
     results = db.process_products(products)
 
-    print("\n[3/3] Run Summary:")
+    print("\n[3/3] Backfilling missing embeddings...")
+    if skip_embeddings:
+        print("  Skipped (--skip-embeddings flag)")
+        backfill_results = {}
+    else:
+        emb = EmbeddingService()
+        backfill_results = backfill_missing_embeddings(db, emb, limit=500)
+
+    print("\n[4/4] Run Summary:")
     print(f"  ✓ {results.get('new', 0)} new products added")
     print(f"  ✓ {results.get('updated', 0)} products updated")
     print(f"  ○ {results.get('skipped', 0)} products unchanged (skipped)")
     print(f"  ✓ {results.get('stale_deleted', 0)} stale products deleted")
+    
+    if backfill_results:
+        print(f"  ✓ {backfill_results.get('updated', 0)} embeddings backfilled")
+        if backfill_results.get('failed', 0) > 0:
+            print(f"  ✗ {backfill_results.get('failed', 0)} embeddings failed to backfill")
     
     if results.get('failed', 0) > 0:
         print(f"  ✗ {results.get('failed', 0)} products failed")

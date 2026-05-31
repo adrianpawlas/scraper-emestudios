@@ -1,6 +1,7 @@
 import supabase
 import time
 import logging
+import ast
 from datetime import datetime
 from config import SUPABASE_URL, SUPABASE_KEY, SOURCE
 
@@ -186,6 +187,59 @@ class DatabaseService:
         except Exception as e:
             logging.error(f"Error deleting stale products: {e}")
             return {"deleted": 0, "error": str(e)}
+
+    def find_products_missing_embeddings(self, limit: int = 500) -> list[dict]:
+        """Query the database for products with NULL or zero-vector embeddings."""
+        try:
+            result = self.client.table("products").select(
+                "id, product_url, title, description, image_url, brand, price, sale, gender, category, image_embedding, info_embedding"
+            ).eq("source", SOURCE).execute()
+            
+            missing = []
+            for p in result.data or []:
+                img_emb = p.get("image_embedding")
+                info_emb = p.get("info_embedding")
+                needs_image = (
+                    img_emb is None or
+                    (isinstance(img_emb, list) and len(img_emb) > 0 and all(v == 0.0 for v in img_emb))
+                )
+                needs_info = (
+                    info_emb is None or
+                    (isinstance(info_emb, list) and len(info_emb) > 0 and all(v == 0.0 for v in info_emb))
+                )
+                if needs_image or needs_info:
+                    p["_needs_image_embedding"] = needs_image
+                    p["_needs_info_embedding"] = needs_info
+                    missing.append(p)
+                if len(missing) >= limit:
+                    break
+            
+            print(f"Found {len(missing)} products with missing embeddings")
+            return missing
+        except Exception as e:
+            logging.error(f"Error finding products with missing embeddings: {e}")
+            return []
+
+    def batch_update_embeddings(self, updates: list[dict]) -> dict:
+        """Update embeddings for a batch of products."""
+        results = {"updated": 0, "failed": 0, "errors": []}
+        
+        for i in range(0, len(updates), self.batch_size):
+            batch = updates[i:i + self.batch_size]
+            try:
+                self.client.table("products").upsert(
+                    batch,
+                    on_conflict="id",
+                    ignore_duplicates=False
+                ).execute()
+                results["updated"] += len(batch)
+            except Exception as e:
+                error_msg = str(e)
+                results["failed"] += len(batch)
+                results["errors"].append(f"Embedding update batch {i // self.batch_size + 1} failed: {error_msg}")
+                logging.error(f"Embedding batch update failed: {error_msg}")
+        
+        return results
 
     def process_products(self, products: list[dict]) -> dict:
         seen_urls = [p["product_url"] for p in products]
