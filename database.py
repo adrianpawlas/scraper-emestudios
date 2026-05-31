@@ -30,7 +30,7 @@ class DatabaseService:
             return None
         return ", ".join(categories)
 
-    def prepare_product_data(self, product: dict, is_new: bool = False, image_changed: bool = False) -> dict:
+    def prepare_product_data(self, product: dict, is_new: bool = False, image_changed: bool = False, embeddings_missing: bool = False) -> dict:
         metadata = product.get("metadata", {})
         
         price = product.get("price")
@@ -58,7 +58,7 @@ class DatabaseService:
         if is_new:
             data["created_at"] = datetime.utcnow().isoformat()
         
-        if is_new or image_changed:
+        if is_new or image_changed or embeddings_missing:
             if product.get("image_embedding") is not None:
                 data["image_embedding"] = product["image_embedding"]
             if product.get("info_embedding") is not None:
@@ -77,7 +77,7 @@ class DatabaseService:
             chunk = product_urls[i:i + chunk_size]
             try:
                 result = self.client.table("products").select(
-                    "id, product_url, title, price, image_url, compressed_image_url, category, metadata, additional_images"
+                    "id, product_url, title, price, image_url, compressed_image_url, category, metadata, additional_images, image_embedding, info_embedding"
                 ).in_("product_url", chunk).execute()
                 
                 for p in result.data:
@@ -204,11 +204,17 @@ class DatabaseService:
             image_changed = existing and existing.get("image_url") != product.get("image_url")
             changed = self.has_changed(existing, product)
             
+            # Check if existing product is missing embeddings that need to be backfilled
+            embeddings_missing = (existing is not None and (
+                existing.get("image_embedding") is None or
+                existing.get("info_embedding") is None
+            ))
+            
             if is_new:
                 prepared = self.prepare_product_data(product, is_new=True, image_changed=True)
                 new_count += 1
-            elif changed:
-                prepared = self.prepare_product_data(product, is_new=False, image_changed=image_changed)
+            elif changed or embeddings_missing:
+                prepared = self.prepare_product_data(product, is_new=False, image_changed=image_changed, embeddings_missing=embeddings_missing)
                 updated_count += 1
             else:
                 prepared = self.prepare_product_data(product, is_new=False, image_changed=False)
