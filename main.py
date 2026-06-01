@@ -8,57 +8,79 @@ from config import SOURCE, CATEGORY_URLS
 from embedding_service import EmbeddingService
 
 
-def backfill_missing_embeddings(db: DatabaseService, emb: EmbeddingService, limit: int = 500) -> dict:
-    """Find products in the database with missing embeddings and regenerate them."""
+def backfill_missing_embeddings(db: DatabaseService, emb: EmbeddingService, batch_size: int = 500) -> dict:
+    """Find products in the database with missing embeddings and regenerate them.
+    Loops in batches until all missing products are processed.
+    """
     print("\n--- Backfill: Checking for products with missing embeddings ---")
-    missing_products = db.find_products_missing_embeddings(limit=limit)
     
-    if not missing_products:
-        print("  All products have embeddings. Nothing to backfill.")
-        return {"checked": 0, "updated": 0, "failed": 0}
+    total_checked = 0
+    total_updated = 0
+    total_failed = 0
+    max_iterations = 20  # Safety limit
+    iteration = 0
     
-    print(f"  Products needing backfill: {len(missing_products)}")
-    
-    updates = []
-    for p in missing_products:
-        try:
-            update = {"id": p["id"]}
-            
-            if p["_needs_info_embedding"]:
-                title = p.get("title") or ""
-                brand = p.get("brand") or ""
-                description = p.get("description") or ""
-                category = p.get("category") or ""
-                gender = p.get("gender") or ""
-                price = p.get("price") or ""
-                text_info = f"{title} {brand} {description} {category} {gender} {price}"
-                update["info_embedding"] = emb.get_text_embedding(text_info)
-                print(f"    Backfilled info_embedding for {p.get('id', 'unknown')}")
-            
-            if p["_needs_image_embedding"]:
-                image_url = p.get("image_url")
-                if image_url:
-                    update["image_embedding"] = emb.get_image_embedding(image_url)
-                    print(f"    Backfilled image_embedding for {p.get('id', 'unknown')}")
-            
-            if len(update) > 1:  # Has fields beyond just "id"
-                updates.append(update)
+    while True:
+        iteration += 1
+        if iteration > max_iterations:
+            print(f"  Reached max iterations ({max_iterations}). Stopping backfill.")
+            break
+        
+        missing_products = db.find_products_missing_embeddings(limit=batch_size)
+        
+        if not missing_products:
+            print("  All products have embeddings. Nothing to backfill.")
+            break
+        
+        print(f"  Products needing backfill in this batch: {len(missing_products)}")
+        total_checked += len(missing_products)
+        
+        updates = []
+        for p in missing_products:
+            try:
+                update = {"id": p["id"]}
                 
-        except Exception as e:
-            print(f"    Error backfilling embeddings for {p.get('id', 'unknown')}: {e}")
-            traceback.print_exc()
-            continue
+                if p["_needs_info_embedding"]:
+                    title = p.get("title") or ""
+                    brand = p.get("brand") or ""
+                    description = p.get("description") or ""
+                    category = p.get("category") or ""
+                    gender = p.get("gender") or ""
+                    price = p.get("price") or ""
+                    text_info = f"{title} {brand} {description} {category} {gender} {price}"
+                    update["info_embedding"] = emb.get_text_embedding(text_info)
+                    print(f"    Backfilled info_embedding for {p.get('id', 'unknown')}")
+                
+                if p["_needs_image_embedding"]:
+                    image_url = p.get("image_url")
+                    if image_url:
+                        update["image_embedding"] = emb.get_image_embedding(image_url)
+                        print(f"    Backfilled image_embedding for {p.get('id', 'unknown')}")
+                
+                if len(update) > 1:  # Has fields beyond just "id"
+                    updates.append(update)
+                    
+            except Exception as e:
+                print(f"    Error backfilling embeddings for {p.get('id', 'unknown')}: {e}")
+                traceback.print_exc()
+                continue
+        
+        if updates:
+            print(f"  Updating {len(updates)} products with new embeddings...")
+            result = db.batch_update_embeddings(updates)
+            total_updated += result["updated"]
+            total_failed += result["failed"]
+            print(f"  Updated: {result['updated']}, Failed: {result['failed']}")
+            if result.get('errors'):
+                for err in result['errors'][:3]:
+                    print(f"    Error: {err}")
+        
+        # If we got fewer than batch_size, we've processed all missing products
+        if len(missing_products) < batch_size:
+            print("  All missing products processed.")
+            break
     
-    if updates:
-        print(f"  Updating {len(updates)} products with new embeddings...")
-        result = db.batch_update_embeddings(updates)
-        print(f"  Updated: {result['updated']}, Failed: {result['failed']}")
-        if result.get('errors'):
-            for err in result['errors'][:3]:
-                print(f"    Error: {err}")
-        return {"checked": len(missing_products), "updated": result["updated"], "failed": result["failed"]}
-    
-    return {"checked": len(missing_products), "updated": 0, "failed": 0}
+    return {"checked": total_checked, "updated": total_updated, "failed": total_failed}
 
 
 async def main(test_mode=False, test_count=3, skip_embeddings=False):
@@ -85,7 +107,7 @@ async def main(test_mode=False, test_count=3, skip_embeddings=False):
         backfill_results = {}
     else:
         emb = EmbeddingService()
-        backfill_results = backfill_missing_embeddings(db, emb, limit=500)
+        backfill_results = backfill_missing_embeddings(db, emb, batch_size=500)
 
     print("\n[4/4] Run Summary:")
     print(f"  ✓ {results.get('new', 0)} new products added")

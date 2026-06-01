@@ -31,6 +31,17 @@ class DatabaseService:
             return None
         return ", ".join(categories)
 
+    @staticmethod
+    def _is_embedding_missing(embedding) -> bool:
+        """Check if an embedding is None, empty, or a zero-vector."""
+        if embedding is None:
+            return True
+        if isinstance(embedding, list):
+            if len(embedding) == 0:
+                return True
+            return all(v == 0.0 for v in embedding)
+        return False
+
     def prepare_product_data(self, product: dict, is_new: bool = False, image_changed: bool = False, embeddings_missing: bool = False) -> dict:
         metadata = product.get("metadata", {})
         
@@ -60,11 +71,14 @@ class DatabaseService:
             data["created_at"] = datetime.utcnow().isoformat()
         
         if is_new or image_changed or embeddings_missing:
-            if product.get("image_embedding") is not None:
-                data["image_embedding"] = product["image_embedding"]
-            if product.get("info_embedding") is not None:
-                data["info_embedding"] = product["info_embedding"]
-        
+            img_emb = product.get("image_embedding")
+            if img_emb is not None and not self._is_embedding_missing(img_emb):
+                data["image_embedding"] = img_emb
+
+            info_emb = product.get("info_embedding")
+            if info_emb is not None and not self._is_embedding_missing(info_emb):
+                data["info_embedding"] = info_emb
+
         return data
 
     def get_existing_products(self, product_urls: list[str]) -> dict:
@@ -199,14 +213,8 @@ class DatabaseService:
             for p in result.data or []:
                 img_emb = p.get("image_embedding")
                 info_emb = p.get("info_embedding")
-                needs_image = (
-                    img_emb is None or
-                    (isinstance(img_emb, list) and len(img_emb) > 0 and all(v == 0.0 for v in img_emb))
-                )
-                needs_info = (
-                    info_emb is None or
-                    (isinstance(info_emb, list) and len(info_emb) > 0 and all(v == 0.0 for v in info_emb))
-                )
+                needs_image = self._is_embedding_missing(img_emb)
+                needs_info = self._is_embedding_missing(info_emb)
                 if needs_image or needs_info:
                     p["_needs_image_embedding"] = needs_image
                     p["_needs_info_embedding"] = needs_info
@@ -221,23 +229,24 @@ class DatabaseService:
             return []
 
     def batch_update_embeddings(self, updates: list[dict]) -> dict:
-        """Update embeddings for a batch of products."""
+        """Update embeddings for a batch of products.
+        Uses .update() instead of .upsert() to avoid NOT NULL constraint issues
+        (upsert tries INSERT first, which requires all columns).
+        """
         results = {"updated": 0, "failed": 0, "errors": []}
         
-        for i in range(0, len(updates), self.batch_size):
-            batch = updates[i:i + self.batch_size]
+        for item in updates:
             try:
-                self.client.table("products").upsert(
-                    batch,
-                    on_conflict="id",
-                    ignore_duplicates=False
-                ).execute()
-                results["updated"] += len(batch)
+                product_id = item.pop("id", None)
+                if product_id:
+                    self.client.table("products").update(item).eq("id", product_id).execute()
+                    results["updated"] += 1
+                item["id"] = product_id  # restore for any retries
             except Exception as e:
                 error_msg = str(e)
-                results["failed"] += len(batch)
-                results["errors"].append(f"Embedding update batch {i // self.batch_size + 1} failed: {error_msg}")
-                logging.error(f"Embedding batch update failed: {error_msg}")
+                results["failed"] += 1
+                results["errors"].append(f"Embedding update for {item.get('id', 'unknown')} failed: {error_msg}")
+                logging.error(f"Embedding update failed for {item.get('id', 'unknown')}: {error_msg}")
         
         return results
 
@@ -258,10 +267,10 @@ class DatabaseService:
             image_changed = existing and existing.get("image_url") != product.get("image_url")
             changed = self.has_changed(existing, product)
             
-            # Check if existing product is missing embeddings that need to be backfilled
+            # Check if existing product is missing embeddings (None or zero-vector) that need updating
             embeddings_missing = (existing is not None and (
-                existing.get("image_embedding") is None or
-                existing.get("info_embedding") is None
+                self._is_embedding_missing(existing.get("image_embedding")) or
+                self._is_embedding_missing(existing.get("info_embedding"))
             ))
             
             if is_new:
